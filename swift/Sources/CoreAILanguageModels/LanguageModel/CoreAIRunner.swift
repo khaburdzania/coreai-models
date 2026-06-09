@@ -71,13 +71,28 @@ public struct CoreAIRunner {
 
     /// Creates a LanguageModel for FM API usage.
     func makeLanguageModel() async throws -> CoreAILanguageModel {
+        // End the span on *every* exit path: `ProfileSpan` is move-only and only records
+        // when `end()` is called, so an error thrown between begin/end would otherwise leak
+        // the span (logged as "ProfileSpan[ModelLoad] was not explicitly ended").
         let modelLoadSpan = InstrumentsProfiler.beginModelLoad(name: bundle.name)
-        let engine = try await makeInferenceEngine()
+        let engine: any InferenceEngine
+        do {
+            engine = try await makeInferenceEngine()
+        } catch {
+            modelLoadSpan.end()
+            throw error
+        }
         modelLoadSpan.end()
 
         let tokenizerLoadSpan = InstrumentsProfiler.beginTokenizerLoad(
             id: bundle.tokenizer)
-        let tokenizer = try await bundle.loadTokenizer()
+        let tokenizer: any Tokenizer
+        do {
+            tokenizer = try await bundle.loadTokenizer()
+        } catch {
+            tokenizerLoadSpan.end()
+            throw error
+        }
         tokenizerLoadSpan.end()
 
         return CoreAILanguageModel(
