@@ -585,8 +585,19 @@ public final class StaticShapeEngine: InferenceEngine, @unchecked Sendable {
     }
 
     public func warmup(queryLength: Int, sampling: SamplingConfiguration?) async throws {
-        for fnName in extendFunctionNames {
-            self.functions[fnName] = try Self.requireFunction(model: model, functionName: fnName)
+        // Priming a single graph is enough to warm the framework's internal caches.
+        // Eagerly materializing *every* extend/prompt graph (all context-length ×
+        // seq-length variants) holds them all resident at once, which can blow past the
+        // process memory limit (EXC_RESOURCE high-watermark) on large function sets. The
+        // lazy loadFunction(named:) path loads each graph on demand during inference, so
+        // correctness doesn't depend on preloading them here — only warm one representative
+        // decode graph for the requested query length.
+        let warmName =
+            extendFunctionNames.first {
+                $0.hasPrefix("extend") && Int($0.split(separator: "_").last ?? "") == queryLength
+            } ?? extendFunctionNames.first
+        if let warmName {
+            self.functions[warmName] = try Self.requireFunction(model: model, functionName: warmName)
         }
         reset()
     }
