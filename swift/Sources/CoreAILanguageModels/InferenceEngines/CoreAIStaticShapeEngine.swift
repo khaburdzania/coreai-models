@@ -277,9 +277,21 @@ public final class StaticShapeEngine: InferenceEngine, @unchecked Sendable {
             throw InferenceRuntimeError.invalidState(
                 "No graph with cache_len > \(currentPosition) and seq_len = \(selectedSeq)")
         }
-        return isPrefill
-            ? "prompt_opt_\(selected.contextLength)_\(selected.queryLength)"
-            : "extend_\(selected.contextLength)_\(selected.queryLength)"
+        // The (ctx, seq) pairs above are derived from *both* `extend_*` and `prompt_*`
+        // function names, so a given pair may not have a matching `prompt_opt_*` graph in
+        // this model. Handing the Core AI runtime a function name it doesn't contain aborts
+        // the process (uncaught native exception) instead of throwing — so only ever return
+        // a name that is actually present, and fall back to the extend graph for prefill.
+        let available = Set(model.functionNames)
+        let promptName = "prompt_opt_\(selected.contextLength)_\(selected.queryLength)"
+        let extendName = "extend_\(selected.contextLength)_\(selected.queryLength)"
+
+        if isPrefill, available.contains(promptName) { return promptName }
+        if available.contains(extendName) { return extendName }
+
+        throw InferenceRuntimeError.invalidState(
+            "No loadable graph for cache_len=\(selected.contextLength), seq_len=\(selected.queryLength), "
+                + "isPrefill=\(isPrefill). Available: \(available.sorted())")
     }
 
     // MARK: - Causal Mask
