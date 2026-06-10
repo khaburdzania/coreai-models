@@ -133,12 +133,31 @@ public struct PreparedModel: Sendable {
     ) async throws -> PreparedModel {
         CLILogger.log("PreparedModelAsset: Preparing \(url.lastPathComponent)")
 
+        // DIAGNOSTIC (unconditional): the package's CLILogger is gated at level 0, so dump the
+        // exact URL and the full asset tree the runtime sees, to localize a bare ENOENT at load.
+        print("‹CoreAI-diag› prepare url=\(url.path)")
+        if let tree = try? FileManager.default.subpathsOfDirectory(atPath: url.path) {
+            print("‹CoreAI-diag› prepare tree=\(tree.sorted())")
+        } else {
+            print("‹CoreAI-diag› prepare tree=<unreadable at \(url.path)>")
+        }
+
         // Probe structure before specializing so we can pick the right compute-unit preference.
         let probedStructure = probeStructure(at: url)
         CLILogger.log("  - Probed structure: \(probedStructure.description)")
+        print("‹CoreAI-diag› probedStructure=\(probedStructure.description)")
 
         let options = probedStructure.specializationOptions
-        let model = try await AIModel(contentsOf: url, options: options)
+        let model: AIModel
+        do {
+            model = try await AIModel(contentsOf: url, options: options)
+        } catch {
+            let ns = error as NSError
+            print("‹CoreAI-diag› AIModel(contentsOf:) FAILED [\(ns.domain) \(ns.code)] \(ns.localizedDescription)")
+            print("‹CoreAI-diag› AIModel userInfo=\(ns.userInfo)")
+            throw error
+        }
+        print("‹CoreAI-diag› AIModel loaded graphs=\(model.functionNames.count)")
         CLILogger.log("  - Loaded \(model.functionNames.count) graphs")
 
         // Re-detect from compiled library — source of truth, should match the probe.
@@ -158,13 +177,17 @@ public struct PreparedModel: Sendable {
             let asset = try AIModelAsset(contentsOf: url)
             if let summary = try asset.summary(includingStatistics: false) {
                 let names = summary.functions.map(\.name)
+                print("‹CoreAI-diag› probe summary functions=\(names.count)")
                 if !names.isEmpty {
                     CLILogger.log("  - Probe (summary): \(names.count) functions")
                     return detectStructure(from: names)
                 }
             }
+            print("‹CoreAI-diag› probe summary empty/nil")
             CLILogger.log("  - Probe (summary) returned empty; defaulting to .dynamic")
         } catch {
+            let ns = error as NSError
+            print("‹CoreAI-diag› probe (AIModelAsset) FAILED [\(ns.domain) \(ns.code)] \(ns.localizedDescription) userInfo=\(ns.userInfo)")
             CLILogger.log("  - Probe (summary) failed: \(error); defaulting to .dynamic")
         }
         return .dynamic
