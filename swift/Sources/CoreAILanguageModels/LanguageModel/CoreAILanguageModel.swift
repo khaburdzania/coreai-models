@@ -487,14 +487,19 @@ public struct CoreAILanguageModel: LanguageModel {
                 stopSequences: stopSequences
             )
 
+            print("‹CoreAI-diag› constrained schema (\(jsonSchema.count) chars): \(jsonSchema.prefix(600))")
+
             // Bridge AsyncThrowingStream -> LanguageModelExecutorGenerationChannel
             var generatedTokenCount = 0
+            var fullText = ""
             for try await result in stream {
                 generatedTokenCount += 1
+                fullText += result.text
                 await channel.send(
                     .response(action: .appendText(result.text, tokenCount: 1))
                 )
             }
+            print("‹CoreAI-diag› constrained output (\(generatedTokenCount) tokens): >>>\(fullText)<<<")
 
             // Usage telemetry placeholder — awaiting Usage(input:output:) API.
             _ = promptTokens.count
