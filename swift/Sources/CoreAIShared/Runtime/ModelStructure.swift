@@ -152,10 +152,22 @@ public struct PreparedModel: Sendable {
         do {
             model = try await AIModel(contentsOf: url, options: options)
         } catch {
+            // Specialization for the structure's preferred compute unit (Neural Engine for
+            // chunked-static models) can fail on some devices/OS builds with a bare POSIX
+            // ENOENT from the ANE compiler. Fall back to GPU specialization, which uses a
+            // separate (MPSGraph) compile path — so ANE is used when it works, GPU otherwise.
             let ns = error as NSError
-            print("‹CoreAI-diag› AIModel(contentsOf:) FAILED [\(ns.domain) \(ns.code)] \(ns.localizedDescription)")
-            print("‹CoreAI-diag› AIModel userInfo=\(ns.userInfo)")
-            throw error
+            print("‹CoreAI-diag› AIModel(contentsOf:) [\(probedStructure.preferredDevice)] FAILED [\(ns.domain) \(ns.code)] \(ns.localizedDescription); retrying on GPU")
+            do {
+                model = try await AIModel(
+                    contentsOf: url,
+                    options: SpecializationOptions(preferredComputeUnitKind: .gpu))
+                print("‹CoreAI-diag› AIModel GPU fallback OK")
+            } catch {
+                let g = error as NSError
+                print("‹CoreAI-diag› AIModel GPU fallback FAILED [\(g.domain) \(g.code)] \(g.localizedDescription)")
+                throw error
+            }
         }
         print("‹CoreAI-diag› AIModel loaded graphs=\(model.functionNames.count)")
         CLILogger.log("  - Loaded \(model.functionNames.count) graphs")
