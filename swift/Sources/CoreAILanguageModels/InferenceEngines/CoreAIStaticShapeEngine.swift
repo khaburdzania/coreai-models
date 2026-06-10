@@ -93,7 +93,9 @@ public final class StaticShapeEngine: InferenceEngine, @unchecked Sendable {
         try Self.validateIOContract(descriptor: largestExtendDescriptor, functionName: largestExtendName)
 
         // Load embeddings
+        print("‹CoreAI-diag› StaticShapeEngine.init loadEmbeddings start \(coreaiMemReport())")
         self.embeddingTable = try await Self.loadEmbeddingTable(from: model)
+        print("‹CoreAI-diag› StaticShapeEngine.init loadEmbeddings done \(coreaiMemReport())")
 
         // Allocate KV cache IOSurfaces sized to the max-context descriptor
         if case .ndArray(let keyCacheDescriptor) = largestExtendDescriptor.stateDescriptor(of: Self.keyCacheName),
@@ -104,12 +106,14 @@ public final class StaticShapeEngine: InferenceEngine, @unchecked Sendable {
             CLILogger.log(
                 "KV cache allocated: key \(keyCacheDescriptor.minimumByteCount) bytes, value \(valueCacheDescriptor.minimumByteCount) bytes (IOSurface)"
             )
+            print("‹CoreAI-diag› StaticShapeEngine.init KV cache allocated key=\(keyCacheDescriptor.minimumByteCount / (1024*1024))MB value=\(valueCacheDescriptor.minimumByteCount / (1024*1024))MB \(coreaiMemReport())")
         } else {
             throw InferenceRuntimeError.invalidState(
                 "No KV cache state descriptors found — cannot allocate cache buffers")
         }
 
         CLILogger.log("Engine initialized")
+        print("‹CoreAI-diag› StaticShapeEngine.init done \(coreaiMemReport())")
     }
 
     public convenience init(configuration: ModelConfig, modelURL: URL) async throws {
@@ -414,6 +418,7 @@ public final class StaticShapeEngine: InferenceEngine, @unchecked Sendable {
             let logitsSpan = InstrumentsProfiler.beginLogitsInference(
                 step: batchStartToken, tokens: tokensInBatch, engine: "StaticShape")
 
+            print("‹CoreAI-diag› inference loadFunction '\(graphName)' (prefill=\(usePrefill)) \(coreaiMemReport())")
             let fn = try loadFunction(named: graphName)
             let desc = try functionDescriptor(for: graphName)
 
@@ -432,11 +437,13 @@ public final class StaticShapeEngine: InferenceEngine, @unchecked Sendable {
             var states = InferenceFunction.MutableViews()
             states.insert(keyCacheView, for: Self.keyCacheName)
             states.insert(valueCacheView, for: Self.valueCacheName)
+            print("‹CoreAI-diag› inference fn.run '\(graphName)' start \(coreaiMemReport())")
             var outputs = try await fn.run(
                 inputs: inputs,
                 states: consume states,
                 outputViews: InferenceFunction.MutableViews()
             )
+            print("‹CoreAI-diag› inference fn.run '\(graphName)' done \(coreaiMemReport())")
 
             let logitsArray = outputs.remove(Self.logitsOutputName)?.ndArray
             logitsSpan.end()
@@ -597,8 +604,26 @@ public final class StaticShapeEngine: InferenceEngine, @unchecked Sendable {
                 $0.hasPrefix("extend") && Int($0.split(separator: "_").last ?? "") == queryLength
             } ?? extendFunctionNames.first
         if let warmName {
+            print("‹CoreAI-diag› warmup requireFunction '\(warmName)' start \(coreaiMemReport())")
             self.functions[warmName] = try Self.requireFunction(model: model, functionName: warmName)
+            print("‹CoreAI-diag› warmup requireFunction '\(warmName)' done \(coreaiMemReport())")
         }
         reset()
     }
+}
+
+// DIAGNOSTIC: current physical memory footprint + remaining headroom before the OS
+// memory-kills the process, to localize an OS termination (jetsam) with no Xcode signal.
+func coreaiMemReport() -> String {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+        MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    let footprintMB = kr == KERN_SUCCESS ? Int(info.phys_footprint) / (1024 * 1024) : -1
+    let availMB = Int(os_proc_available_memory()) / (1024 * 1024)
+    return "[mem footprint=\(footprintMB)MB avail=\(availMB)MB]"
 }
